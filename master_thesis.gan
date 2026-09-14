@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?><project name="Master Thesis" company="DTU" webLink="http://" view-date="2026-08-01" view-index="0" gantt-divider-location="351" resource-divider-location="300" version="3.3.3322" locale="en_GB">
+    <description/>
+    <view zooming-state="default:9" id="gantt-chart">
+        <field id="tpd3" name="Nom" width="200" order="0"/>
+        <field id="tpd4" name="Date de début" width="75" order="1"/>
+        <field id="tpd5" name="Date de fin" width="75" order="2"/>
+        <field id="tpd15" name="Notes" width="20" order="3"/>
+        <option id="filter.completedTasks" value="false"/>
+        <option id="filter.dueTodayTasks" value="false"/>
+        <option id="filter.overdueTasks" value="false"/>
+        <option id="filter.inProgressTodayTasks" value="false"/>
+    </view>
+    <view id="resource-table">
+        <field id="0" name="Name" width="210" order="0"/>
+        <field id="1" name="Default role" width="86" order="1"/>
+    </view>
+    <!-- -->
+    <calendars>
+        <day-types>
+            <day-type id="0"/>
+            <day-type id="1"/>
+            <default-week id="1" name="default" sun="1" mon="0" tue="0" wed="0" thu="0" fri="0" sat="1"/>
+            <only-show-weekends value="false"/>
+            <overriden-day-types/>
+            <days/>
+        </day-types>
+    </calendars>
+    <tasks empty-milestones="true">
+        <taskproperties>
+            <taskproperty id="tpd0" name="type" type="default" valuetype="icon"/>
+            <taskproperty id="tpd1" name="priority" type="default" valuetype="icon"/>
+            <taskproperty id="tpd2" name="info" type="default" valuetype="icon"/>
+            <taskproperty id="tpd3" name="name" type="default" valuetype="text"/>
+            <taskproperty id="tpd4" name="begindate" type="default" valuetype="date"/>
+            <taskproperty id="tpd5" name="enddate" type="default" valuetype="date"/>
+            <taskproperty id="tpd6" name="duration" type="default" valuetype="int"/>
+            <taskproperty id="tpd7" name="completion" type="default" valuetype="int"/>
+            <taskproperty id="tpd8" name="coordinator" type="default" valuetype="text"/>
+            <taskproperty id="tpd9" name="predecessorsr" type="default" valuetype="text"/>
+        </taskproperties>
+        <task id="0" uid="7fd26e9c88304c42925aaf9681b35e68" name="Reading documentation" meeting="false" start="2026-09-01" duration="2" complete="100" expand="true">
+            <depend id="18" type="2" difference="0" hardness="Strong"/>
+        </task>
+        <task id="18" uid="620e7a66b77a46e0a82bd59ea85a8e32" name="Choose model and dataset" meeting="false" start="2026-09-03" duration="4" complete="100" expand="true">
+            <depend id="19" type="2" difference="0" hardness="Strong"/>
+        </task>
+        <task id="19" uid="40cd1dad735042c7804b2cfc399ac37e" name="Deep Speech baseline" meeting="false" start="2026-09-09" duration="15" complete="0" expand="true">
+            <depend id="20" type="2" difference="0" hardness="Strong"/>
+        </task>
+        <task id="20" uid="39dd1ded78a64266b261c7f890000935" name="Deep Speech PTQ" meeting="false" start="2026-09-30" duration="15" complete="0" expand="true">
+            <depend id="21" type="2" difference="0" hardness="Strong"/>
+            <depend id="23" type="2" difference="0" hardness="Strong"/>
+        </task>
+        <task id="21" uid="ef8c22ff53074b9f9f6c1ccc7a97e291" name="Deep Speech QAT" color="#8cb6ce" meeting="false" start="2026-10-21" duration="20" complete="0" expand="true">
+            <depend id="22" type="2" difference="0" hardness="Strong"/>
+            <depend id="23" type="2" difference="0" hardness="Strong"/>
+            <depend id="24" type="2" difference="0" hardness="Strong"/>
+        </task>
+        <task id="23" uid="d281989a56f54539ac949659fed5cca1" name="Mixed precision PTQ" color="#8cb6ce" meeting="false" start="2026-11-18" duration="15" complete="0" expand="true">
+            <depend id="22" type="2" difference="0" hardness="Strong"/>
+            <depend id="24" type="2" difference="0" hardness="Strong"/>
+        </task>
+        <task id="24" uid="16e8da7ee26c42f19345acf3325b9751" name="Mixed precision QAT" color="#8cb6ce" meeting="false" start="2026-12-09" duration="15" complete="0" expand="true">
+            <depend id="22" type="2" difference="0" hardness="Strong"/>
+        </task>
+        <task id="22" uid="d8ac956320354108a9750f38b23aecb7" name="Comparison" meeting="false" start="2026-12-30" duration="10" complete="0" expand="true"/>
+        <task id="14" uid="4697c35a01d64eba89347a41ea36a3d9" name="Project Plan" meeting="true" start="2026-10-01" duration="0" complete="0" expand="true"/>
+        <task id="15" uid="334052bce7f04764a7fcd2e9b614c580" name="Report hand-in" color="#000000" meeting="true" start="2027-02-01" duration="0" complete="0" expand="true"/>
+    </tasks>
+    <resources/>
+    <allocations/>
+    <vacations/>
+    <previous/>
+    <roles roleset-name="Default"/>
+</project>
