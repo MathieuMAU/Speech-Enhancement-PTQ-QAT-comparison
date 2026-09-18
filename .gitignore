@@ -1,2 +1,6 @@
 /Code/.vscode/
 /Code/.venv/
+/Code/dataset/vctk_corpus/
+/Code/dataset/singlesounds_bformat/
+.venv/
+__pycache__/
