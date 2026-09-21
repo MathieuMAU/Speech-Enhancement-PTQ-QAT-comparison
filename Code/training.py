@@ -11,7 +11,7 @@ from pathlib import Path
 from_checkpoint = True
 n_fft = 512
 f_df = 5000
-epochs = 80
+epochs = 100
 batch_size = 8
 C = 64
 N = 5
@@ -113,6 +113,9 @@ scheduler = torch.optim.lr_scheduler.StepLR(
     gamma=0.9
 )
 
+start_epoch = 0
+best_val_loss = float("inf")
+
 if from_checkpoint:
     checkpoint = torch.load(
         "checkpoints/last.pt",
@@ -120,13 +123,15 @@ if from_checkpoint:
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    scheduler.load_state_dict(checkpoint["scheduler_stae_dict"])
+    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    start_epoch = checkpoint["epoch"]
+    best_val_loss = checkpoint.get("best_val_loss", float("inf"))
 
 epoch_times = []
 epoch_peak_memory = []
 
-best_val_loss = float("inf")
-for e in tqdm(range(epochs)):
+for e in tqdm(range(start_epoch, epochs)):
     learning_rate = optimizer.param_groups[0]["lr"]
 
     model.train()
@@ -205,28 +210,32 @@ for e in tqdm(range(epochs)):
     val_mr /= len(test_loader)
     val_spec /= len(test_loader)
 
+    is_best = val_total < best_val_loss
+
+    if is_best:
+        best_val_loss = val_total
+
     checkpoint = {
         "epoch": e + 1,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "val_loss": val_total,
+        "best_val_loss": best_val_loss
     }
+
+    # Save only when validation improves
+    if is_best:
+        torch.save(
+            checkpoint,
+            checkpoint_dir / "best.pt"
+        )
 
     # Always save latest checkpoint
     torch.save(
         checkpoint,
         checkpoint_dir / "last.pt"
     )
-
-    # Save only when validation improves
-    if val_total < best_val_loss:
-        best_val_loss = val_total
-
-        torch.save(
-            checkpoint,
-            checkpoint_dir / "best.pt"
-        )
 
     with open(stats_file, "a", newline="") as f:
         writer = csv.writer(f)
