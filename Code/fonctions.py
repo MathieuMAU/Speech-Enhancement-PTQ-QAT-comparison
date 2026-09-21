@@ -150,15 +150,28 @@ def get_erb_fb(nb_bands, sample_rate, n_fft):
     return band_idx
 
 
-def apply_deep_filter(YG, C, l=2):
-    """
-    YG: [B, F, T] complex
-    C:  [B, N, F, T] complex
-    """
-    B, F, T = YG.shape
+def apply_deep_filter(ft, G_erb, C, config, l=2):
+
+    G_prime = G_erb * torch.sin(torch.pi / 2 * G_erb)
+    beta = 0.02
+    G_pf = (1 + beta) * G_erb / (
+        1 + beta + G_prime
+    )
+
+    G = F.interpolate(
+        G_pf,
+        size=(255, G_erb.shape[-1]),
+        mode="bilinear",
+        align_corners=False,
+    )
+
+    G = G.squeeze(1)
+    YG = G * ft
+    YG_df = YG[:, config.df_indices, :]
+    _, _, T = YG.shape
     N = C.shape[1]
 
-    Y = torch.zeros_like(YG)
+    Y = torch.zeros_like(YG_df)
 
     for i in range(N):
         shift = i - l
@@ -166,16 +179,29 @@ def apply_deep_filter(YG, C, l=2):
         if shift >= 0:
             Y[:, :, shift:] += (
                 C[:, i, :, shift:] *
-                YG[:, :, :T-shift]
+                YG_df[:, :, :T-shift]
             )
         else:
             d = -shift
             Y[:, :, :T-d] += (
                 C[:, i, :, :T-d] *
-                YG[:, :, d:]
+                YG_df[:, :, d:]
             )
+    Y_df = YG.clone()
+    Y_df[:, config.df_indices, :] = Y
 
-    return Y
+    B, _, T = Y_df.shape
+
+    Y_full = torch.zeros(
+        B, config.n_fft//2 + 1, T,
+        dtype=Y_df.dtype,
+        device=Y_df.device
+    )
+    Y_full[:, 0, :] = 0
+    Y_full[:, 1:-1, :] = Y_df
+    Y_full[:, -1, :] = 0
+
+    return Y_full
 
 
 def compressed_complex_stft(X, c=0.3, eps=1e-8):
@@ -283,39 +309,12 @@ def lspec(Y, S, c=0.6):
 
 
 def compute_loss(G_erb, C_df, clean, ft, window, config: Config):
-    G_prime = G_erb * torch.sin(torch.pi / 2 * G_erb)
-    beta = 0.02
-    G_pf = (1 + beta) * G_erb / (
-        1 + beta + G_prime
-    )
-    G = F.interpolate(
-        G_pf,
-        size=(255, G_erb.shape[-1]),
-        mode="bilinear",
-        align_corners=False,
-    )
-    G = G.squeeze(1)
-    YG = G * ft
-    YG_df = YG[:, config.df_indices, :]
-
     C_real = C_df[:, :config.N]
     C_imag = C_df[:, config.N:]
     C_df_comp = torch.complex(C_real, C_imag)
 
-    Y_df = apply_deep_filter(YG_df, C_df_comp, l=2)
-    Y_final = YG.clone()
-    Y_final[:, :config.N_df, :] = Y_df
+    Y_full = apply_deep_filter(ft, G_erb, C_df_comp, config, l=2)
 
-    B, _, T = Y_final.shape
-
-    Y_full = torch.zeros(
-        B, config.n_fft//2 + 1, T,
-        dtype=Y_final.dtype,
-        device=Y_final.device
-    )
-    Y_full[:, 0, :] = 0
-    Y_full[:, 1:-1, :] = Y_final
-    Y_full[:, -1, :] = 0
     y = torch.istft(
         Y_full,
         n_fft=512,

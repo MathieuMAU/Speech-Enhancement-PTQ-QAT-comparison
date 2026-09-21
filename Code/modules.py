@@ -72,7 +72,7 @@ class GLinear(torch.nn.Module):
 
 
 class Encoder(torch.nn.Module):
-    def __init__(self, C):
+    def __init__(self, C, N_df):
         super().__init__()
         self.erb_conv1 = Conv_block(
             in_channels=1, out_channels=C, kernel_size=(3, 3), stride=(1, 1))
@@ -87,7 +87,7 @@ class Encoder(torch.nn.Module):
             in_channels=2, out_channels=C*2, kernel_size=(3, 3), stride=(1, 1))
         self.comp_conv2 = Conv_block(
             in_channels=C*2, out_channels=C*2, kernel_size=(1, 3), stride=(2, 1))
-        self.comp_glinear = GLinear(2*C*80, C*4, 8)
+        self.comp_glinear = GLinear(2*C*N_df//2, C*4, 8)
 
         self.group_glinear = GLinear(C*4*2, C*4, 8)
         self.gru = torch.nn.GRU(input_size=C*4, hidden_size=C*4,
@@ -140,6 +140,7 @@ class ERB_decoder(torch.nn.Module):
 
         self.conv = torch.nn.Conv2d(
             in_channels=2*C, out_channels=1, kernel_size=(3, 3), stride=(1, 1))
+        self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, x_group, x_erb4, x_erb3, x_erb2, x_erb1):
         x_erb4 = self.pconv1(x_erb4)
@@ -158,7 +159,7 @@ class ERB_decoder(torch.nn.Module):
         x = torch.cat([x, x_erb1], dim=1)
         x = F.pad(x, (2, 0, 1, 1))
         x = self.conv(x)
-
+        x = self.sigmoid(x)
         return x
 
 
@@ -192,7 +193,7 @@ class DeepFilterNet2(torch.nn.Module):
     def __init__(self, C, N, N_df):
         super().__init__()
 
-        self.encoder = Encoder(C)
+        self.encoder = Encoder(C, N_df)
         self.erb_decoder = ERB_decoder(C)
         self.comp_decoder = Comp_decoder(C, N, N_df)
 
