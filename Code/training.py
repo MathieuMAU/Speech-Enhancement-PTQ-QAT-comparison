@@ -8,10 +8,10 @@ from fonctions import collate_fn, process, compute_loss
 from modules import DeepFilterNet2, Config
 from pathlib import Path
 
-
+from_checkpoint = True
 n_fft = 512
 f_df = 5000
-epochs = 20
+epochs = 80
 batch_size = 8
 C = 64
 N = 5
@@ -112,6 +112,15 @@ scheduler = torch.optim.lr_scheduler.StepLR(
     step_size=3,
     gamma=0.9
 )
+
+if from_checkpoint:
+    checkpoint = torch.load(
+        "checkpoints/last.pt",
+        map_location=device,
+    )
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    scheduler.load_state_dict(checkpoint["scheduler_stae_dict"])
 
 epoch_times = []
 epoch_peak_memory = []
