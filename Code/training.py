@@ -22,6 +22,15 @@ checkpoint_dir = Path("checkpoints")
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
 stats_file = checkpoint_dir / "training_stats.csv"
 
+if torch.cuda.is_available():
+    gpu_model = torch.cuda.get_device_name(0)
+    device = "cuda"
+else:
+    gpu_model = "CPU"
+    device = "cpu"
+
+print(f"Running on {device}")
+
 # Create the file and header only if it doesn't already exist
 if not os.path.exists(stats_file):
     with open(stats_file, "w", newline="") as f:
@@ -37,11 +46,9 @@ if not os.path.exists(stats_file):
             "epoch_time_s",
             "peak_train_gpu_memory_mb",
             "learning_rate",
-            "num_batches"
+            "num_batches",
+            "gpu_model"
         ])
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Running on {device}")
 
 ds = load_dataset("JacobLinCool/VoiceBank-DEMAND-16k")
 train = ds['train']
@@ -225,7 +232,8 @@ for e in tqdm(range(epochs)):
             epoch_time,
             peak_memory,
             learning_rate,
-            batch_size
+            batch_size,
+            gpu_model,
         ])
 
     print(
