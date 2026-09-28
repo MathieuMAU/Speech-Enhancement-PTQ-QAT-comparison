@@ -8,7 +8,7 @@ from fonctions import collate_fn, process, compute_loss
 from modules import DeepFilterNet2, Config
 from pathlib import Path
 
-from_checkpoint = True
+from_checkpoint = False
 n_fft = 512
 f_df = 5000
 epochs = 100
@@ -46,12 +46,16 @@ if not os.path.exists(stats_file):
             "epoch_time_s",
             "peak_train_gpu_memory_mb",
             "learning_rate",
-            "num_batches",
+            "batches_size",
             "gpu_model"
         ])
 
 ds = load_dataset("JacobLinCool/VoiceBank-DEMAND-16k")
-train = ds['train']
+split = ds["train"].train_test_split(
+    test_size=0.10,
+    seed=42
+)
+train = split["train"]
 train_loader = torch.utils.data.DataLoader(
     train,
     batch_size=batch_size,
@@ -62,9 +66,9 @@ train_loader = torch.utils.data.DataLoader(
 )
 
 
-test = ds['test']
-test_loader = torch.utils.data.DataLoader(
-    test,
+val = split["test"]
+val_loader = torch.utils.data.DataLoader(
+    val,
     batch_size=batch_size,
     shuffle=False,
     collate_fn=collate_fn,
@@ -81,9 +85,11 @@ win_length = int(sample_rate / 1000 * 20)
 window = torch.hann_window(win_length).to(device)
 hop_length = win_length // 2
 freqs = torch.fft.rfftfreq(
-    n_fft-3,
+    n_fft,
     d=1 / sample_rate,
 )
+# Remove DC and Nyquist bins
+freqs = freqs[1:-1]
 df_indices = freqs <= f_df
 N_df = df_indices.sum().item()
 
@@ -191,7 +197,7 @@ for e in tqdm(range(start_epoch, epochs)):
     val_mr = 0.0
 
     with torch.no_grad():
-        for batch in test_loader:
+        for batch in val_loader:
             clean = batch["clean"].to(device, non_blocking=True)
             noisy = batch["noisy"].to(device, non_blocking=True)
 
@@ -206,9 +212,9 @@ for e in tqdm(range(start_epoch, epochs)):
             val_mr += loss_mr.item()
             val_spec += loss_spec.item()
 
-    val_total /= len(test_loader)
-    val_mr /= len(test_loader)
-    val_spec /= len(test_loader)
+    val_total /= len(val_loader)
+    val_mr /= len(val_loader)
+    val_spec /= len(val_loader)
 
     is_best = val_total < best_val_loss
 
