@@ -3,6 +3,14 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 from modules import Config
+import random
+import copy
+from modules import ActivationObserver
+from tqdm import tqdm
+from pesq import pesq
+from pystoi import stoi
+import pandas as pd
+import torchaudio
 
 
 def collate_fn(batch):
@@ -34,6 +42,64 @@ def collate_fn(batch):
     return {
         "clean": clean,
         "noisy": noisy,
+    }
+
+
+def collate_fn_finetune(batch, sample_rate=16000, duration=4, random_crop=True):
+    clean = []
+    noisy = []
+    filenames = []
+
+    chunk_size = int(sample_rate * duration)
+
+    for row in batch:
+
+        # Already tensors from torchaudio.load()
+        clean_waveform = row["clean"].squeeze(0).float()
+        noisy_waveform = row["noisy"].squeeze(0).float()
+
+        length = clean_waveform.shape[-1]
+
+        if length >= chunk_size:
+
+            if random_crop:
+                start = random.randint(
+                    0,
+                    length - chunk_size
+                )
+            else:
+                # Deterministic center crop
+                start = (
+                    length - chunk_size
+                ) // 2
+
+            end = start + chunk_size
+
+            clean_waveform = clean_waveform[start:end]
+            noisy_waveform = noisy_waveform[start:end]
+
+        else:
+
+            padding = chunk_size - length
+
+            clean_waveform = torch.nn.functional.pad(
+                clean_waveform,
+                (0, padding)
+            )
+
+            noisy_waveform = torch.nn.functional.pad(
+                noisy_waveform,
+                (0, padding)
+            )
+
+        clean.append(clean_waveform)
+        noisy.append(noisy_waveform)
+        filenames.append(row["filename"])
+
+    return {
+        "clean": torch.stack(clean),
+        "noisy": torch.stack(noisy),
+        "filenames": filenames
     }
 
 
@@ -331,3 +397,255 @@ def compute_loss(G_erb, C_df, clean, ft, window, config: Config):
                    return_complex=True)
     loss_spec = lspec(Y_full, S)
     return loss_mr, loss_spec
+
+
+def fake_quantize_symmetric(x, bits):
+    qmax = 2 ** (bits - 1) - 1
+
+    max_val = x.abs().max()
+
+    if max_val == 0:
+        return x
+
+    scale = max_val / qmax
+
+    x_q = torch.round(x / scale)
+    x_q = torch.clamp(x_q, -qmax, qmax)
+
+    # Dequantize
+    x_dq = x_q * scale
+
+    return x_dq
+
+
+def fake_quantize_activation(x, scale, bits=8):
+
+    qmax = 2 ** (bits - 1) - 1
+
+    q = torch.round(x / scale)
+
+    q = torch.clamp(
+        q,
+        -qmax,
+        qmax
+    )
+
+    return q * scale
+
+
+def quantize_model_weights(model, bits):
+    model_ptq = copy.deepcopy(model)
+    with torch.no_grad():
+        for name, module in model_ptq.named_modules():
+
+            if isinstance(module, (torch.nn.Conv2d, torch.nn.ConvTranspose2d, torch.nn.Linear)):
+                module.weight.data.copy_(
+                    fake_quantize_symmetric(
+                        module.weight.data,
+                        bits=bits
+                    )
+                )
+
+            elif isinstance(module, torch.nn.GRU):
+                for param_name, param in module.named_parameters():
+
+                    if "weight" in param_name:
+                        param.data.copy_(
+                            fake_quantize_symmetric(
+                                param.data,
+                                bits=bits
+                            )
+                        )
+
+    return model_ptq
+
+
+def calibrate_activations(model_q, calibration_data, window, config, num_calibration):
+    # Initialize activation observers
+    observers = {}
+    for name, module in model_q.named_modules():
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.ConvTranspose2d, torch.nn.Linear, torch.nn.GRU)):
+            observers[name] = ActivationObserver()
+
+    handles = []
+
+    # Register forward hooks to update observers during calibration
+    for name, module in model_q.named_modules():
+
+        if name not in observers:
+            continue
+
+        observer = observers[name]
+
+        def make_hook(obs):
+            def hook(module, inputs):
+
+                x = inputs[0]
+
+                obs.update(x)
+
+            return hook
+
+        handle = module.register_forward_pre_hook(
+            make_hook(observer)
+        )
+
+        handles.append(handle)
+
+    # Calibration loop
+    model_q.eval()
+    with torch.no_grad():
+        for signal in calibration_data.select(range(num_calibration)):
+
+            noisy = (
+                signal["noisy"]
+                .get_all_samples()
+                .data
+                .float()
+                .cpu()
+            )
+
+            Xnorm, Xdf, _ = process(
+                noisy,
+                window,
+                config
+            )
+
+            model_q(Xnorm, Xdf)
+    # Remove hooks after calibration
+    for handle in handles:
+        handle.remove()
+
+    return observers
+
+
+def attach_activation_quantizers(model_q, observers, bits):
+    activation_handles = []
+
+    for name, module in model_q.named_modules():
+
+        if name not in observers:
+            continue
+
+        scale = observers[name].get_scale(bits=bits)
+
+        def make_quant_hook(scale, bits):
+
+            def hook(module, inputs):
+
+                x = inputs[0]
+
+                x_q = fake_quantize_activation(
+                    x,
+                    scale=scale,
+                    bits=bits
+                )
+
+                return (x_q,) + inputs[1:]
+
+            return hook
+
+        handle = module.register_forward_pre_hook(
+            make_quant_hook(scale, bits)
+        )
+
+        activation_handles.append(handle)
+    return activation_handles
+
+
+def evaluate_model(model_q, test, window, config, description="", save_process=False, process_dir=None):
+    model_q.eval()
+
+    sample_results = []
+
+    with torch.no_grad():
+
+        for signal in tqdm(test, desc=description):
+
+            clean = (
+                signal["clean"]
+                .get_all_samples()
+                .data
+                .float()
+                .cpu()
+            )
+
+            noisy = (
+                signal["noisy"]
+                .get_all_samples()
+                .data
+                .float()
+                .cpu()
+            )
+
+            # Feature extraction
+            Xnorm, Xdf, ft = process(
+                noisy,
+                window,
+                config
+            )
+
+            # Model inference
+            G_q, C_q = model_q(Xnorm, Xdf)
+
+            # Complex DF coefficients
+            C_complex = torch.complex(
+                C_q[:, :config.N],
+                C_q[:, config.N:]
+            )
+
+            # Deep filtering
+            Y_q = apply_deep_filter(
+                ft,
+                G_q,
+                C_complex,
+                config
+            )
+
+            # ISTFT
+            y_q = torch.istft(
+                Y_q,
+                n_fft=config.n_fft,
+                hop_length=config.hop_length,
+                win_length=config.win_length,
+                window=window,
+                length=noisy.shape[-1],
+            )
+
+            clean_np = clean.squeeze().numpy()
+            enhanced_np = y_q.squeeze().cpu().numpy()
+
+            if save_process and process_dir is not None:
+                output_path = process_dir / f"{signal['id']}.wav"
+
+                torchaudio.save(
+                    str(output_path),
+                    y_q.detach().cpu(),
+                    config.sample_rate
+                )
+
+            # PESQ - enhanced only
+            pesq_value = pesq(
+                config.sample_rate,
+                clean_np,
+                enhanced_np,
+                "wb"
+            )
+
+            # STOI - enhanced only
+            stoi_value = stoi(
+                clean_np,
+                enhanced_np,
+                config.sample_rate,
+                extended=False
+            )
+
+            sample_results.append({
+                "id": signal["id"],
+                "pesq": pesq_value,
+                "stoi": stoi_value,
+            })
+
+    sample_df = pd.DataFrame(sample_results)
+
+    return sample_df

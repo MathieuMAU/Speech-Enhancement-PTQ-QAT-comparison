@@ -4,3 +4,9 @@
 /Code/dataset/singlesounds_bformat/
 .venv/
 __pycache__/
+/Code/checkpoints/
+/Code/dataset/
+/Code/DNSMOS/
+/Code/enhanced/
+/Code/noisy/
+/Code/fp32/

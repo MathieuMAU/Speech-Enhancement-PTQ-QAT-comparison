@@ -1,6 +1,9 @@
 import torch
 import torch.nn.functional as F
 from dataclasses import dataclass, field
+from torch.utils.data import Dataset
+from pathlib import Path
+import torchaudio
 
 
 class Conv_block(torch.nn.Module):
@@ -219,3 +222,52 @@ class Config:
 
     df_indices: torch.Tensor
     N_df: int
+
+
+class EnvironmentalDataset(Dataset):
+    def __init__(self, dataframe, clean_dir, noisy_dir):
+        self.df = dataframe.reset_index(drop=True)
+        self.clean_dir = Path(clean_dir)
+        self.noisy_dir = Path(noisy_dir)
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+
+        clean, sr_clean = torchaudio.load(
+            self.clean_dir / row["clean_file"]
+        )
+
+        noisy, sr_noisy = torchaudio.load(
+            self.noisy_dir / row["noisy_file"]
+        )
+
+        assert sr_clean == sr_noisy == 16000
+
+        return {
+            "clean": clean,
+            "noisy": noisy,
+            "sample_rate": sr_clean,
+            "filename": row["clean_file"]
+        }
+
+
+class ActivationObserver:
+    def __init__(self):
+        self.max_abs = 0.0
+
+    def update(self, x):
+        if not torch.is_tensor(x):
+            return
+
+        current_max = x.detach().abs().max().item()
+
+        if current_max > self.max_abs:
+            self.max_abs = current_max
+
+    def get_scale(self, bits=8):
+        qmax = 2 ** (bits - 1) - 1
+
+        return max(self.max_abs / qmax, 1e-12)

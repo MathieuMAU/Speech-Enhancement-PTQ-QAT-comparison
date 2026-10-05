@@ -2,3 +2,7 @@ datasets
 torchcodec
 tqdm
 pesq
+logging
+pandas
+configparser 
+argparse
