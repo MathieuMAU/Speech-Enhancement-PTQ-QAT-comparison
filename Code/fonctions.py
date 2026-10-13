@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from modules import Config
 import random
 import copy
-from modules import ActivationObserver
+from modules import ActivationObserver, CustomGRU
 from tqdm import tqdm
 from pesq import pesq
 from pystoi import stoi
@@ -457,19 +457,50 @@ def quantize_model_weights(model, bits):
                             )
                         )
 
+            elif isinstance(module, CustomGRU):
+                for param_name, param in module.named_parameters():
+
+                    if "weight" in param_name:
+                        param.data.copy_(
+                            fake_quantize_symmetric(
+                                param.data,
+                                bits=bits
+                            )
+                        )
     return model_ptq
 
 
-def calibrate_activations(model_q, calibration_data, window, config, num_calibration):
-    # Initialize activation observers
+def calibrate_activations(
+    model_q,
+    calibration_data,
+    window,
+    config,
+    num_calibration
+):
     observers = {}
-    for name, module in model_q.named_modules():
-        if isinstance(module, (torch.nn.Conv2d, torch.nn.ConvTranspose2d, torch.nn.Linear, torch.nn.GRU)):
-            observers[name] = ActivationObserver()
-
     handles = []
 
-    # Register forward hooks to update observers during calibration
+    # Standard modules and custom GRUs
+    for name, module in model_q.named_modules():
+
+        if isinstance(
+            module,
+            (
+                torch.nn.Conv2d,
+                torch.nn.ConvTranspose2d,
+                torch.nn.Linear,
+                CustomGRU,
+            )
+        ):
+            observers[name] = ActivationObserver()
+
+        if isinstance(module, CustomGRU):
+
+            for layer in range(module.num_layers):
+                observers[f"{name}.layer{layer}.input"] = ActivationObserver()
+                observers[f"{name}.layer{layer}.hidden"] = ActivationObserver()
+
+    # Standard module input hooks
     for name, module in model_q.named_modules():
 
         if name not in observers:
@@ -479,23 +510,36 @@ def calibrate_activations(model_q, calibration_data, window, config, num_calibra
 
         def make_hook(obs):
             def hook(module, inputs):
-
-                x = inputs[0]
-
-                obs.update(x)
-
+                obs.update(inputs[0])
             return hook
 
-        handle = module.register_forward_pre_hook(
-            make_hook(observer)
+        handles.append(
+            module.register_forward_pre_hook(
+                make_hook(observer)
+            )
         )
 
-        handles.append(handle)
+    # Attach observers to custom GRU internals
+    for name, module in model_q.named_modules():
 
-    # Calibration loop
+        if isinstance(module, CustomGRU):
+
+            module.activation_observers = {
+                layer: {
+                    "input": observers[f"{name}.layer{layer}.input"],
+                    "hidden": observers[f"{name}.layer{layer}.hidden"],
+                }
+                for layer in range(module.num_layers)
+            }
+
+    # Calibration
     model_q.eval()
+
     with torch.no_grad():
-        for signal in calibration_data.select(range(num_calibration)):
+
+        for signal in calibration_data.select(
+            range(min(num_calibration, len(calibration_data)))
+        ):
 
             noisy = (
                 signal["noisy"]
@@ -512,9 +556,15 @@ def calibrate_activations(model_q, calibration_data, window, config, num_calibra
             )
 
             model_q(Xnorm, Xdf)
-    # Remove hooks after calibration
+
+    # Remove hooks
     for handle in handles:
         handle.remove()
+
+    # Remove internal observer references
+    for module in model_q.modules():
+        if isinstance(module, CustomGRU):
+            module.activation_observers = None
 
     return observers
 
@@ -526,6 +576,22 @@ def attach_activation_quantizers(model_q, observers, bits):
 
         if name not in observers:
             continue
+
+        # Custom GRU: internal activation quantization
+        if isinstance(module, CustomGRU):
+
+            module.activation_quantizers = {
+                layer: {
+                    "input": observers[
+                        f"{name}.layer{layer}.input"
+                    ].get_scale(bits=bits),
+
+                    "hidden": observers[
+                        f"{name}.layer{layer}.hidden"
+                    ].get_scale(bits=bits),
+                }
+                for layer in range(module.num_layers)
+            }
 
         scale = observers[name].get_scale(bits=bits)
 
@@ -649,3 +715,85 @@ def evaluate_model(model_q, test, window, config, description="", save_process=F
     sample_df = pd.DataFrame(sample_results)
 
     return sample_df
+
+
+def convert_gru_to_custom(gru):
+
+    if gru.bidirectional:
+        raise NotImplementedError(
+            "Bidirectional GRU is not supported."
+        )
+
+    if not gru.batch_first:
+        raise NotImplementedError(
+            "Expected batch_first=True."
+        )
+
+    custom_gru = CustomGRU(
+        input_size=gru.input_size,
+        hidden_size=gru.hidden_size,
+        num_layers=gru.num_layers,
+        bias=gru.bias,
+        batch_first=gru.batch_first,
+    )
+
+    # Match device and dtype
+    reference_parameter = next(
+        gru.parameters()
+    )
+
+    custom_gru = custom_gru.to(
+        device=reference_parameter.device,
+        dtype=reference_parameter.dtype,
+    )
+
+    # Copy parameters
+    with torch.no_grad():
+
+        for layer in range(
+            gru.num_layers
+        ):
+
+            getattr(
+                custom_gru,
+                f"weight_ih_l{layer}",
+            ).copy_(
+                getattr(
+                    gru,
+                    f"weight_ih_l{layer}",
+                )
+            )
+
+            getattr(
+                custom_gru,
+                f"weight_hh_l{layer}",
+            ).copy_(
+                getattr(
+                    gru,
+                    f"weight_hh_l{layer}",
+                )
+            )
+
+            if gru.bias:
+
+                getattr(
+                    custom_gru,
+                    f"bias_ih_l{layer}",
+                ).copy_(
+                    getattr(
+                        gru,
+                        f"bias_ih_l{layer}",
+                    )
+                )
+
+                getattr(
+                    custom_gru,
+                    f"bias_hh_l{layer}",
+                ).copy_(
+                    getattr(
+                        gru,
+                        f"bias_hh_l{layer}",
+                    )
+                )
+
+    return custom_gru

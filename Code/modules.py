@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from torch.utils.data import Dataset
 from pathlib import Path
 import torchaudio
+from fonctions import fake_quantize_activation
 
 
 class Conv_block(torch.nn.Module):
@@ -271,3 +272,419 @@ class ActivationObserver:
         qmax = 2 ** (bits - 1) - 1
 
         return max(self.max_abs / qmax, 1e-12)
+
+
+class CustomGRU(torch.nn.Module):
+    """
+    Custom implementation of torch.nn.GRU for:
+
+        batch_first=True
+        bidirectional=False
+
+    Supports multiple layers and reproduces PyTorch's GRU equations.
+
+    Input:
+        x:  [B, T, input_size]
+
+    Optional:
+        h0: [num_layers, B, hidden_size]
+
+    Returns:
+        output: [B, T, hidden_size]
+        h_n:    [num_layers, B, hidden_size]
+    """
+
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        num_layers=1,
+        bias=True,
+        batch_first=True,
+    ):
+        super().__init__()
+
+        if not batch_first:
+            raise NotImplementedError(
+                "This implementation currently assumes batch_first=True."
+            )
+
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bias = bias
+        self.batch_first = batch_first
+
+        # ----------------------------------------------------
+        # Create parameters with the SAME naming convention
+        # as torch.nn.GRU.
+        #
+        # This makes transferring weights straightforward.
+        # ----------------------------------------------------
+
+        for layer in range(num_layers):
+
+            layer_input_size = (
+                input_size
+                if layer == 0
+                else hidden_size
+            )
+
+            # PyTorch combines the three gates:
+            #
+            # reset
+            # update
+            # new
+            #
+            # => 3 * hidden_size
+
+            weight_ih = torch.nn.Parameter(
+                torch.empty(
+                    3 * hidden_size,
+                    layer_input_size,
+                )
+            )
+
+            weight_hh = torch.nn.Parameter(
+                torch.empty(
+                    3 * hidden_size,
+                    hidden_size,
+                )
+            )
+
+            self.register_parameter(
+                f"weight_ih_l{layer}",
+                weight_ih,
+            )
+
+            self.register_parameter(
+                f"weight_hh_l{layer}",
+                weight_hh,
+            )
+
+            if bias:
+
+                bias_ih = torch.nn.Parameter(
+                    torch.empty(
+                        3 * hidden_size
+                    )
+                )
+
+                bias_hh = torch.nn.Parameter(
+                    torch.empty(
+                        3 * hidden_size
+                    )
+                )
+
+                self.register_parameter(
+                    f"bias_ih_l{layer}",
+                    bias_ih,
+                )
+
+                self.register_parameter(
+                    f"bias_hh_l{layer}",
+                    bias_hh,
+                )
+
+        self.reset_parameters()
+
+    # ========================================================
+    # Initialization
+    # ========================================================
+
+    def reset_parameters(self):
+        """
+        Match torch.nn.GRU initialization.
+        """
+
+        stdv = 1.0 / (self.hidden_size ** 0.5)
+
+        for parameter in self.parameters():
+
+            torch.nn.init.uniform_(
+                parameter,
+                -stdv,
+                stdv,
+            )
+
+    # ========================================================
+    # One GRU timestep
+    # ========================================================
+
+    def gru_cell(
+        self,
+        x_t,
+        h_prev,
+        weight_ih,
+        weight_hh,
+        bias_ih,
+        bias_hh,
+    ):
+        """
+        x_t:
+            [B, input_size]
+
+        h_prev:
+            [B, hidden_size]
+
+        Returns:
+            h_t:
+            [B, hidden_size]
+        """
+
+        # ----------------------------------------------------
+        # Input-to-hidden
+        # ----------------------------------------------------
+
+        gi = F.linear(
+            x_t,
+            weight_ih,
+            bias_ih,
+        )
+
+        # ----------------------------------------------------
+        # Hidden-to-hidden
+        # ----------------------------------------------------
+
+        gh = F.linear(
+            h_prev,
+            weight_hh,
+            bias_hh,
+        )
+
+        # ----------------------------------------------------
+        # Split gates
+        #
+        # PyTorch order:
+        # r, z, n
+        # ----------------------------------------------------
+
+        i_r, i_z, i_n = gi.chunk(
+            3,
+            dim=1,
+        )
+
+        h_r, h_z, h_n = gh.chunk(
+            3,
+            dim=1,
+        )
+
+        # ----------------------------------------------------
+        # Reset gate
+        # ----------------------------------------------------
+
+        reset_gate = torch.sigmoid(
+            i_r + h_r
+        )
+
+        # ----------------------------------------------------
+        # Update gate
+        # ----------------------------------------------------
+
+        update_gate = torch.sigmoid(
+            i_z + h_z
+        )
+
+        # ----------------------------------------------------
+        # New gate
+        #
+        # IMPORTANT:
+        #
+        # PyTorch:
+        #
+        # n = tanh(
+        #     i_n
+        #     +
+        #     reset_gate * h_n
+        # )
+        #
+        # h_n already contains:
+        #
+        # W_hn h + b_hn
+        # ----------------------------------------------------
+
+        new_gate = torch.tanh(
+            i_n
+            +
+            reset_gate * h_n
+        )
+
+        # ----------------------------------------------------
+        # Final hidden state
+        #
+        # PyTorch:
+        #
+        # h_t =
+        # (1 - z) * n
+        # +
+        # z * h_prev
+        # ----------------------------------------------------
+
+        h_t = (
+            (1.0 - update_gate)
+            * new_gate
+            +
+            update_gate
+            * h_prev
+        )
+
+        return h_t
+
+    # ========================================================
+    # Forward
+    # ========================================================
+
+    def forward(
+        self,
+        x,
+        h0=None,
+    ):
+
+        # x:
+        # [B, T, input_size]
+
+        batch_size = x.size(0)
+        sequence_length = x.size(1)
+
+        # ----------------------------------------------------
+        # Initial hidden state
+        # ----------------------------------------------------
+
+        if h0 is None:
+
+            h0 = torch.zeros(
+                self.num_layers,
+                batch_size,
+                self.hidden_size,
+                device=x.device,
+                dtype=x.dtype,
+            )
+
+        # ----------------------------------------------------
+        # Process each layer
+        # ----------------------------------------------------
+
+        layer_input = x
+
+        final_hidden_states = []
+
+        for layer in range(
+            self.num_layers
+        ):
+
+            # Get parameters
+            weight_ih = getattr(
+                self,
+                f"weight_ih_l{layer}",
+            )
+
+            weight_hh = getattr(
+                self,
+                f"weight_hh_l{layer}",
+            )
+
+            if self.bias:
+
+                bias_ih = getattr(
+                    self,
+                    f"bias_ih_l{layer}",
+                )
+
+                bias_hh = getattr(
+                    self,
+                    f"bias_hh_l{layer}",
+                )
+
+            else:
+
+                bias_ih = None
+                bias_hh = None
+
+            # Initial state for this layer
+            h_t = h0[layer]
+
+            timestep_outputs = []
+
+            # ------------------------------------------------
+            # Process sequence
+            # ------------------------------------------------
+
+            for t in range(
+                sequence_length
+            ):
+
+                x_t = layer_input[:, t, :]
+
+                # Observe internal GRU activations
+                if getattr(self, "activation_observers", None) is not None:
+
+                    self.activation_observers[layer]["input"].update(x_t)
+
+                    # h_t contains the previous hidden state at this point
+                    self.activation_observers[layer]["hidden"].update(h_t)
+
+                # Internal GRU activation quantization
+                if getattr(self, "activation_quantizers", None) is not None:
+
+                    scales = self.activation_quantizers[layer]
+                    bits = self.activation_bits
+
+                    x_t = fake_quantize_activation(
+                        x_t,
+                        scale=scales["input"],
+                        bits=bits
+                    )
+
+                    h_prev_q = fake_quantize_activation(
+                        h_t,
+                        scale=scales["hidden"],
+                        bits=bits
+                    )
+
+                else:
+                    h_prev_q = h_t
+
+                h_t = self.gru_cell(
+                    x_t=x_t,
+                    h_prev=h_prev_q,
+
+                    weight_ih=weight_ih,
+                    weight_hh=weight_hh,
+
+                    bias_ih=bias_ih,
+                    bias_hh=bias_hh,
+                )
+
+                timestep_outputs.append(
+                    h_t
+                )
+
+            # ------------------------------------------------
+            # Stack sequence
+            # ------------------------------------------------
+
+            layer_output = torch.stack(
+                timestep_outputs,
+                dim=1,
+            )
+
+            # Becomes input to next layer
+            layer_input = layer_output
+
+            # Final state of this layer
+            final_hidden_states.append(
+                h_t
+            )
+
+        # ====================================================
+        # Final output
+        # ====================================================
+
+        output = layer_input
+
+        h_n = torch.stack(
+            final_hidden_states,
+            dim=0,
+        )
+
+        return output, h_n

@@ -1,5 +1,5 @@
 from modules import DeepFilterNet2, Config
-from fonctions import quantize_model_weights, calibrate_activations, attach_activation_quantizers, evaluate_model
+from fonctions import quantize_model_weights, calibrate_activations, attach_activation_quantizers, evaluate_model, convert_gru_to_custom
 import torch
 import pandas as pd
 from datasets import load_dataset
@@ -52,6 +52,9 @@ config = Config(
 )
 
 model = DeepFilterNet2(C, N, N_df).to(device)
+model.encoder.gru = convert_gru_to_custom(model.encoder.gru)
+model.erb_decoder.gru = convert_gru_to_custom(model.erb_decoder.gru)
+model.comp_decoder.gru = convert_gru_to_custom(model.comp_decoder.gru)
 
 checkpoint = torch.load(
     "checkpoints/best.pt",
@@ -88,7 +91,6 @@ for bits in bit_widths:
         model_fp32,
         bits=bits
     )
-
     # Calibration: training data only
     observers = calibrate_activations(
         model_q=model_q,
@@ -117,7 +119,6 @@ for bits in bit_widths:
         save_process=True,
         process_dir=process_dir
     )
-
     # --------------------------------------------
     # SAVE AFTER EVERY EXPERIMENT
     # --------------------------------------------
