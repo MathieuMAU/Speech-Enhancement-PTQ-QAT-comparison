@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from torch.utils.data import Dataset
 from pathlib import Path
 import torchaudio
-from fonctions import fake_quantize_activation
+from quantization import fake_quantize_activation
 
 
 class Conv_block(torch.nn.Module):
