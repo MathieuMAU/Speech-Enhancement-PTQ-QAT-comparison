@@ -559,6 +559,8 @@ def attach_activation_quantizers(model_q, observers, bits):
                 }
                 for layer in range(module.num_layers)
             }
+            module.activation_bits = bits
+            continue
 
         scale = observers[name].get_scale(bits=bits)
 

@@ -4,6 +4,7 @@ import torch
 import pandas as pd
 from datasets import load_dataset
 from pathlib import Path
+import time
 
 bit_widths = [16, 10, 8, 6, 4, 2]
 
@@ -91,7 +92,10 @@ for bits in bit_widths:
         model_fp32,
         bits=bits
     )
+    print(f"Model weights quantized to {bits}-bit.")
+
     # Calibration: training data only
+    start_calibration = time.perf_counter()
     observers = calibrate_activations(
         model_q=model_q,
         calibration_data=train,
@@ -100,12 +104,33 @@ for bits in bit_widths:
         num_calibration=200
     )
 
+    calibration_duration = time.perf_counter() - start_calibration
+
+    print(f"Calibration W{bits}A{bits}: {calibration_duration:.2f} seconds")
+    calibration_csv = results_dir / "calibration_times.csv"
+
+    calibration_df = pd.DataFrame([{
+        "bits": bits,
+        "configuration": f"W{bits}A{bits}",
+        "num_calibration": 200,
+        "calibration_seconds": calibration_duration,
+        "calibration_minutes": calibration_duration / 60,
+    }])
+
+    calibration_df.to_csv(
+        calibration_csv,
+        mode="a",
+        header=not calibration_csv.exists(),
+        index=False
+    )
+
     # Enable activation fake quantization
     activation_handles = attach_activation_quantizers(
         model_q=model_q,
         observers=observers,
         bits=bits
     )
+    print(f"Activation quantizers attached for W{bits}A{bits}.")
 
     process_dir = process_dir0 / f"W{bits}A{bits}"
     process_dir.mkdir(parents=True, exist_ok=True)
