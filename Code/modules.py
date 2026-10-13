@@ -314,7 +314,9 @@ class CustomGRU(torch.nn.Module):
         self.num_layers = num_layers
         self.bias = bias
         self.batch_first = batch_first
-
+        self.activation_observers = None
+        self.activation_quantizers = None
+        self.activation_bits = None
         # ----------------------------------------------------
         # Create parameters with the SAME naming convention
         # as torch.nn.GRU.
