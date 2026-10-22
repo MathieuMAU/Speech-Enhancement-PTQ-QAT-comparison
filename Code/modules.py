@@ -317,6 +317,9 @@ class CustomGRU(torch.nn.Module):
         self.activation_observers = None
         self.activation_quantizers = None
         self.activation_bits = None
+
+        self.lsq_inputs = None
+        self.lsq_hidden = None
         # ----------------------------------------------------
         # Create parameters with the SAME naming convention
         # as torch.nn.GRU.
@@ -625,8 +628,14 @@ class CustomGRU(torch.nn.Module):
                     # h_t contains the previous hidden state at this point
                     self.activation_observers[layer]["hidden"].update(h_t)
 
+                # QAT: learned activation scales (LSQ)
+                if getattr(self, "lsq_inputs", None) is not None:
+
+                    x_t = self.lsq_inputs[layer](x_t)
+                    h_prev_q = self.lsq_hidden[layer](h_t)
+
                 # Internal GRU activation quantization
-                if getattr(self, "activation_quantizers", None) is not None:
+                elif getattr(self, "activation_quantizers", None) is not None:
 
                     scales = self.activation_quantizers[layer]
                     bits = self.activation_bits
