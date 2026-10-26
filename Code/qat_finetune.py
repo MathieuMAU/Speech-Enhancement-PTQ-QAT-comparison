@@ -220,7 +220,6 @@ for bits in bit_widths:
             loss.backward()
 
             optimizer.step()
-            break
 
         # Wait for all CUDA operations to finish before stopping timer
         if device == "cuda":
@@ -260,7 +259,6 @@ for bits in bit_widths:
                 val_total += loss.item()
                 val_mr += loss_mr.item()
                 val_spec += loss_spec.item()
-                break
 
         val_total /= len(val_loader)
         val_mr /= len(val_loader)
