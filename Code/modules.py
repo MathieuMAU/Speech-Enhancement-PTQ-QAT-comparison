@@ -180,6 +180,7 @@ class Comp_decoder(torch.nn.Module):
 
         self.pconv = torch.nn.Conv2d(2*C, 2*N, kernel_size=(1, 1))
 
+        # Remnant, needed to load the pretrained model, but not used in the forward pass
         self.conv = torch.nn.Conv2d(
             in_channels=2*C, out_channels=2*N, kernel_size=(3, 3), stride=(1, 1))
 
@@ -271,7 +272,7 @@ class ActivationObserver:
     def get_scale(self, bits=8):
         qmax = 2 ** (bits - 1) - 1
 
-        return max(self.max_abs / qmax, 1e-12)
+        return max(self.max_abs / qmax, 1e-7)
 
 
 class CustomGRU(torch.nn.Module):

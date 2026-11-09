@@ -6,18 +6,18 @@ from datasets import load_dataset
 from tqdm import tqdm
 from fonctions import collate_fn, process, compute_loss, convert_gru_to_custom, calibrate_activations
 from modules import DeepFilterNet2, Config, CustomGRU
-from quantization import enable_lsq_weights, attach_lsq_activations, attach_lsq_activations_from_checkpoint
+from quantization import enable_lsq_weights, attach_lsq_activations, attach_lsq_activations_from_checkpoint, inspect_lsq_scales
 from pathlib import Path
 
 n_fft = 512
 f_df = 5000
-epochs = 30
+epochs = 20
 batch_size = 8
 C = 64
 N = 5
 lambdaspec = 1e3
 lambdamr = 5e2
-bit_widths = [16, 10, 8, 6, 4, 2]
+bit_widths = [4, 2]
 
 checkpoint_dir = Path("checkpoints")
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -130,7 +130,7 @@ for bits in bit_widths:
 
             model = model.to("cpu")
             window = window.to("cpu")
-            observers = calibrate_activations(model, train, window, config, 30)
+            observers = calibrate_activations(model, train, window, config, 50)
             enable_lsq_weights(model, bits, custom=CustomGRU)
             handles = attach_lsq_activations(
                 model, observers, bits, custom=CustomGRU)
@@ -202,14 +202,16 @@ for bits in bit_widths:
             torch.cuda.synchronize()
         start_time = time.perf_counter()
 
-        for batch in tqdm(train_loader, desc="Training", position=1):
+        for batch_idx, batch in enumerate(train_loader, start=1):
             clean = batch["clean"].to(device, non_blocking=True)
             noisy = batch["noisy"].to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
 
             Xnorm, Xdf, ft = process(noisy, window, config)
+
             G_erb, C_df = model(Xnorm, Xdf)
+
             loss_mr, loss_spec = compute_loss(
                 G_erb, C_df, clean, ft, window, config)
 
@@ -217,9 +219,88 @@ for bits in bit_widths:
             train_total += loss.item()
             train_mr += loss_mr.item()
             train_spec += loss_spec.item()
+
+            #######################
+            if not torch.isfinite(loss).all():
+                print(f"Nonfinite loss at batch {batch_idx}")
+                print(f"loss_mr:   {loss_mr.item()}")
+                print(f"loss_spec: {loss_spec.item()}")
+
+                raise RuntimeError("Nonfinite loss")
+            #######################
+
             loss.backward()
 
+            #####################
+            inspect_lsq_scales(model)
+            nonfinite_found = False
+
+            for name, param in model.named_parameters():
+                if param.grad is None:
+                    continue
+
+                grad = param.grad.detach()
+
+                # Check for NaN and Inf separately
+                nan_mask = torch.isnan(grad)
+                inf_mask = torch.isinf(grad)
+
+                nan_count = nan_mask.sum().item()
+                inf_count = inf_mask.sum().item()
+
+                if nan_count > 0 or inf_count > 0:
+                    nonfinite_found = True
+
+                    print(
+                        f"NONFINITE GRADIENT: {name}, "
+                        f"NaNs={nan_count}, "
+                        f"Infs={inf_count}, "
+                        f"total={grad.numel()}"
+                    )
+
+                    # Don't calculate norms for nonfinite gradients
+                    continue
+
+                # Compute norm in float64 to avoid float32 overflow
+                grad_norm = torch.linalg.vector_norm(
+                    grad.double()
+                ).item()
+
+                if grad_norm > 1e8:
+                    print(
+                        f"Large gradient: {name}, "
+                        f"norm={grad_norm:.3e}, "
+                        f"max={grad.abs().max().item():.3e}"
+                    )
+
+            # Raise only after checking all parameters
+            if nonfinite_found:
+                raise RuntimeError(
+                    f"NaN/Inf gradients detected at batch {batch_idx}"
+                )
+
+            # Compute the global norm in float64
+            grads = [
+                p.grad.detach().double().reshape(-1)
+                for p in model.parameters()
+                if p.grad is not None
+            ]
+
+            global_norm = torch.linalg.vector_norm(
+                torch.cat(grads)
+            ).item()
+
+            print(f"Batch {batch_idx}: global norm = {global_norm:.3e}")
+
+            ######################
             optimizer.step()
+            ######################
+            for name, param in model.named_parameters():
+                if not torch.isfinite(param).all():
+                    raise RuntimeError(
+                        f"Nonfinite parameter after optimizer step: {name}"
+                    )
+            ########################
 
         # Wait for all CUDA operations to finish before stopping timer
         if device == "cuda":

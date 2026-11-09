@@ -1,5 +1,6 @@
 import torch
 from torch.nn.utils import parametrize
+import math
 
 
 def fake_quantize_symmetric(x, bits):
@@ -197,7 +198,6 @@ def attach_lsq_activations(model, observers, bits, custom):
             continue
 
         init_scale = observers[name].get_scale(bits=bits)
-
         module.lsq_input = LSQQuantizer(
             bits, init_scale
         )
@@ -268,3 +268,22 @@ def attach_lsq_activations_from_checkpoint(
         )
 
     return handles
+
+
+def inspect_lsq_scales(model):
+    scales = []
+
+    for name, module in model.named_modules():
+        if isinstance(module, LSQQuantizer):
+            s = module.scale.detach()
+
+            scales.append((
+                name,
+                s.abs().item()
+            ))
+
+    scales.sort(key=lambda x: x[1])
+
+    print("Smallest LSQ scales:")
+    for name, value in scales[:10]:
+        print(f"  {name}: {value:.3e}")
