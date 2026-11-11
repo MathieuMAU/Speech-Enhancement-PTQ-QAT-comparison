@@ -18,6 +18,9 @@ N = 5
 lambdaspec = 1e3
 lambdamr = 5e2
 bit_widths = [4, 2]
+higher_bits = 8
+higher_precision_modules = ["encoder.gru",
+                            "erb_decoder.gru", "comp_decoder.gru"]
 
 checkpoint_dir = Path("checkpoints")
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -85,11 +88,14 @@ config = Config(
     hop_length=hop_length,
     win_length=win_length,
     df_indices=df_indices,
-    N_df=N_df
+    N_df=N_df,
+    higher_precision_modules=higher_precision_modules,
+    higher_bits=higher_bits
 )
 
 results_dir = Path("results/qat")
 results_dir.mkdir(exist_ok=True)
+
 
 for bits in bit_widths:
     print(f"Starting QAT with {bits}-bit quantization")
@@ -131,9 +137,9 @@ for bits in bit_widths:
             model = model.to("cpu")
             window = window.to("cpu")
             observers = calibrate_activations(model, train, window, config, 50)
-            enable_lsq_weights(model, bits, custom=CustomGRU)
+            enable_lsq_weights(model, bits, custom=CustomGRU, config=config)
             handles = attach_lsq_activations(
-                model, observers, bits, custom=CustomGRU)
+                model, observers, bits, custom=CustomGRU, config=config)
 
     else:
         with open(stats_file, "r") as f:
@@ -163,7 +169,8 @@ for bits in bit_widths:
                 enable_lsq_weights(
                     model,
                     bits,
-                    custom=CustomGRU
+                    custom=CustomGRU,
+                    config=config
                 )
 
                 # Recreate LSQ activation quantizers and hooks
@@ -171,7 +178,8 @@ for bits in bit_widths:
                     model,
                     state_dict,
                     bits,
-                    custom=CustomGRU
+                    custom=CustomGRU,
+                    config=config
                 )
 
                 # Restore learned FP32 weights and scales

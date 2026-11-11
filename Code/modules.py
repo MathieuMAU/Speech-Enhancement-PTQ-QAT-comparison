@@ -224,6 +224,8 @@ class Config:
 
     df_indices: torch.Tensor
     N_df: int
+    higher_precision_modules: list
+    higher_bits: int
 
 
 class EnvironmentalDataset(Dataset):

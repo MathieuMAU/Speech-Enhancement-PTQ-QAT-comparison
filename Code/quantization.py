@@ -114,9 +114,10 @@ class LSQQuantizer(torch.nn.Module):
         )
 
 
-def enable_lsq_weights(model, bits, custom):
+def enable_lsq_weights(model, bits, custom, config):
 
-    for module in list(model.modules()):
+    for name, module in list(model.named_modules()):
+        bits = get_bits(name, bits, config=config)
 
         if isinstance(
             module,
@@ -157,12 +158,12 @@ def enable_lsq_weights(model, bits, custom):
                     )
 
 
-def attach_lsq_activations(model, observers, bits, custom):
+def attach_lsq_activations(model, observers, bits, custom, config):
 
     handles = []
 
     for name, module in list(model.named_modules()):
-
+        bits = get_bits(name, bits, config=config)
         if isinstance(module, custom):
 
             module.lsq_inputs = torch.nn.ModuleList()
@@ -214,11 +215,12 @@ def attach_lsq_activations(model, observers, bits, custom):
 
 
 def attach_lsq_activations_from_checkpoint(
-    model, state_dict, bits, custom
+    model, state_dict, bits, custom, config
 ):
     handles = []
 
     for name, module in list(model.named_modules()):
+        bits = get_bits(name, bits, config=config)
 
         if isinstance(module, custom):
 
@@ -287,3 +289,13 @@ def inspect_lsq_scales(model):
     print("Smallest LSQ scales:")
     for name, value in scales[:10]:
         print(f"  {name}: {value:.3e}")
+
+
+def get_bits(name, default_bits, config=None):
+    if any(
+        name == module or name.startswith(module + ".")
+        for module in config.higher_precision_modules
+    ):
+        return config.higher_bits
+
+    return default_bits
