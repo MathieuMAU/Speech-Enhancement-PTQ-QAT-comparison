@@ -79,7 +79,7 @@ results_dir.mkdir(parents=True, exist_ok=True)
 modules_name = [name for name, module in model.named_modules() if isinstance(
     module, (torch.nn.Conv2d, torch.nn.ConvTranspose2d, torch.nn.Linear, CustomGRU))]
 
-output_path = results_dir / "sensitivity_analysis_results.csv"
+output_path = results_dir / "sensitivity_analysis_weight_results.csv"
 output_path.parent.mkdir(parents=True, exist_ok=True)
 
 # Load completed evaluations if resuming
