@@ -400,10 +400,14 @@ def compute_loss(G_erb, C_df, clean, ft, window, config: Config):
     return loss_mr, loss_spec
 
 
-def quantize_model_weights(model, bits):
+def quantize_model_weights(model, bits, lower_precision_modules=None, lower_bits=8, higher_bits=8):
     model_ptq = copy.deepcopy(model)
     with torch.no_grad():
         for name, module in model_ptq.named_modules():
+            if name in lower_precision_modules:
+                bits = lower_bits
+            else:
+                bits = higher_bits
 
             if isinstance(module, (torch.nn.Conv2d, torch.nn.ConvTranspose2d, torch.nn.Linear)):
                 module.weight.data.copy_(
@@ -425,6 +429,7 @@ def quantize_model_weights(model, bits):
                         )
 
             elif isinstance(module, CustomGRU):
+
                 for param_name, param in module.named_parameters():
 
                     if "weight" in param_name:
@@ -536,13 +541,18 @@ def calibrate_activations(
     return observers
 
 
-def attach_activation_quantizers(model_q, observers, bits):
+def attach_activation_quantizers(model_q, observers, bits, lower_precision_modules=None, lower_bits=8, higher_bits=8):
     activation_handles = []
 
     for name, module in model_q.named_modules():
 
         if name not in observers:
             continue
+
+        if name in lower_precision_modules:
+            bits = lower_bits
+        else:
+            bits = higher_bits
 
         # Custom GRU: internal activation quantization
         if isinstance(module, CustomGRU):
